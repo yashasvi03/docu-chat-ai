@@ -1,103 +1,84 @@
 /**
  * Document Model
  * 
- * This is a placeholder for a MongoDB model using Mongoose.
- * In a real implementation, this would be connected to MongoDB.
+ * Sequelize model for documents in PostgreSQL
  */
 
-// const mongoose = require('mongoose');
-// const Schema = mongoose.Schema;
+const { DataTypes } = require('sequelize');
+const { v4: uuidv4 } = require('uuid');
 
-/**
- * Document Schema Definition
- * Commented out as we're using in-memory storage for now
- */
-/*
-const documentSchema = new Schema({
-  userId: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  name: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  type: {
-    type: String,
-    required: true
-  },
-  size: {
-    type: Number,
-    required: true
-  },
-  url: {
-    type: String,
-    required: true
-  },
-  folderId: {
-    type: Schema.Types.ObjectId,
-    ref: 'Folder',
-    default: null
-  },
-  tags: [{
-    type: String,
-    trim: true
-  }],
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  }
-});
+module.exports = (sequelize) => {
+  const Document = sequelize.define('Document', {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: () => uuidv4(),
+      primaryKey: true
+    },
+    title: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    mime: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    size: {
+      type: DataTypes.INTEGER,
+      allowNull: false
+    },
+    storagePath: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    status: {
+      type: DataTypes.ENUM('pending', 'processing', 'ready', 'error'),
+      defaultValue: 'ready'
+    },
+    tags: {
+      type: DataTypes.ARRAY(DataTypes.STRING),
+      defaultValue: []
+    },
+    orgId: {
+      type: DataTypes.UUID,
+      allowNull: false
+    }
+  }, {
+    timestamps: true,
+    paranoid: true, // Soft deletes
+    indexes: [
+      {
+        fields: ['orgId']
+      },
+      {
+        fields: ['uploadedById']
+      },
+      {
+        fields: ['folderId']
+      }
+    ]
+  });
 
-// Update the updatedAt timestamp before saving
-documentSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
-});
+  Document.associate = (models) => {
+    Document.belongsTo(models.User, {
+      foreignKey: 'uploadedById',
+      as: 'uploadedBy'
+    });
+    
+    Document.belongsTo(models.Folder, {
+      foreignKey: 'folderId',
+      as: 'folder'
+    });
+    
+    Document.belongsTo(models.Organisation, {
+      foreignKey: 'orgId',
+      as: 'organisation'
+    });
+    
+    Document.hasMany(models.Chunk, {
+      foreignKey: 'documentId',
+      as: 'chunks'
+    });
+  };
 
-const Document = mongoose.model('Document', documentSchema);
-*/
-
-/**
- * For now, we'll export a placeholder that matches the interface
- * In a real implementation, this would export the Mongoose model
- */
-const Document = {
-  findById: async (id) => {
-    // This would query MongoDB in a real implementation
-    return null;
-  },
-  find: async (query) => {
-    // This would query MongoDB in a real implementation
-    return [];
-  },
-  create: async (documentData) => {
-    // This would create a document in MongoDB in a real implementation
-    return {
-      id: 'placeholder-id',
-      ...documentData,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-  },
-  findByIdAndUpdate: async (id, updates) => {
-    // This would update a document in MongoDB in a real implementation
-    return {
-      id,
-      ...updates,
-      updatedAt: new Date().toISOString()
-    };
-  },
-  findByIdAndDelete: async (id) => {
-    // This would delete a document in MongoDB in a real implementation
-    return true;
-  }
+  return Document;
 };
-
-module.exports = Document;

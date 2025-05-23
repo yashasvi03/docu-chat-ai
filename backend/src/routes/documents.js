@@ -7,7 +7,7 @@ const { body, param, query } = require('express-validator');
 const documentController = require('../controllers/documentController');
 
 // Import middleware
-const auth = require('../middleware/auth');
+const { auth, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 
 // Configure multer for file uploads
@@ -58,8 +58,20 @@ router.put('/:id',
   documentController.updateDocument
 );
 
+// Folder routes
 // GET /api/documents/folders - Get all folders
 router.get('/folders', auth, documentController.getAllFolders);
+
+// GET /api/documents/folders/tree - Get folder tree
+router.get('/folders/tree', auth, documentController.getFolderTree);
+
+// GET /api/documents/folders/:id - Get a specific folder
+router.get('/folders/:id', 
+  auth, 
+  param('id').isString(), 
+  validate, 
+  documentController.getFolderById
+);
 
 // POST /api/documents/folders - Create a new folder
 router.post('/folders', 
@@ -70,11 +82,72 @@ router.post('/folders',
   documentController.createFolder
 );
 
+// PUT /api/documents/folders/:id - Update a folder
+router.put('/folders/:id',
+  auth,
+  param('id').isString(),
+  body('name').optional().isString(),
+  body('parentId').optional().isString(),
+  validate,
+  documentController.updateFolder
+);
+
+// DELETE /api/documents/folders/:id - Delete a folder
+router.delete('/folders/:id',
+  auth,
+  param('id').isString(),
+  query('recursive').optional().isBoolean(),
+  validate,
+  documentController.deleteFolder
+);
+
+// POST /api/documents/move - Move documents to a folder
+router.post('/move',
+  auth,
+  body('documentIds').isArray(),
+  body('folderId').optional().isString(),
+  validate,
+  documentController.moveDocumentsToFolder
+);
+
+// Presigned URL routes
+// POST /api/documents/presign - Get presigned URL for upload
+router.post('/presign',
+  auth,
+  body('filename').isString(),
+  body('contentType').isString(),
+  body('folderId').optional().isString(),
+  validate,
+  documentController.getPresignedUrl
+);
+
+// POST /api/documents/:id/complete - Complete upload
+router.post('/:id/complete',
+  auth,
+  param('id').isString(),
+  validate,
+  documentController.completeUpload
+);
+
 // Google Drive integration
 // POST /api/documents/drive/sync - Sync with Google Drive
 router.post('/drive/sync', auth, documentController.syncWithGoogleDrive);
 
 // GET /api/documents/drive - Get documents from Google Drive
 router.get('/drive', auth, documentController.getGoogleDriveDocuments);
+
+// POST /api/documents/drive/connect - Connect Google Drive
+router.post('/drive/connect',
+  auth,
+  body('code').isString(),
+  validate,
+  documentController.connectGoogleDrive
+);
+
+// GET /api/documents/drive/status - Get Google Drive connection status
+router.get('/drive/status', auth, documentController.getGoogleDriveStatus);
+
+// DELETE /api/documents/drive/disconnect - Disconnect Google Drive
+router.delete('/drive/disconnect', auth, documentController.disconnectGoogleDrive);
 
 module.exports = router;

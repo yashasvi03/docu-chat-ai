@@ -1,186 +1,130 @@
-const { OpenAI } = require('openai');
+/**
+ * Chat Controller
+ * 
+ * This controller handles chat functionality including thread and message management,
+ * as well as integration with the RAG system for document-based responses.
+ */
 
 // Import services
 const chatService = require('../services/chatService');
-const documentService = require('../services/documentService');
 const embeddingService = require('../services/embeddingService');
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
-
 /**
- * Send a query to the chat
- * @route POST /api/chat/query
+ * Send a message to the chat
+ * @route POST /api/chat/message
  */
-exports.sendQuery = async (req, res) => {
+exports.sendMessage = async (req, res) => {
   try {
-    const { message, folderId, tags, conversationId } = req.body;
+    const { message, threadId, folderId, tags, stream } = req.body;
     const userId = req.user.id;
     
-    // Create a new conversation if not provided
-    let conversation;
-    if (conversationId) {
-      conversation = await chatService.getConversationById(conversationId, userId);
-      if (!conversation) {
+    // Create a new thread if not provided
+    let thread;
+    if (threadId) {
+      thread = await chatService.getThreadById(threadId, userId);
+      if (!thread) {
         return res.status(404).json({
           error: true,
-          message: 'Conversation not found'
+          message: 'Thread not found'
         });
       }
     } else {
-      // Create a new conversation with the first few words of the message as the title
+      // Create a new thread with the first few words of the message as the title
       const title = message.split(' ').slice(0, 5).join(' ') + '...';
-      conversation = await chatService.createConversation({
+      thread = await chatService.createThread({
         userId,
         title
       });
     }
     
-    // Save user message to history
-    const userMessage = await chatService.saveMessage({
-      conversationId: conversation.id,
-      content: message,
-      role: 'user'
-    });
-    
-    // Get relevant document chunks based on the query
-    const relevantChunks = await embeddingService.findRelevantDocuments(
-      message,
-      userId,
-      folderId,
-      tags
-    );
-    
-    // If no relevant chunks found, return a default response
-    if (relevantChunks.length === 0) {
-      const assistantMessage = await chatService.saveMessage({
-        conversationId: conversation.id,
-        content: "I don't have enough information to answer that question. My knowledge is limited to the documents you've uploaded.",
-        role: 'assistant'
+    // If streaming is requested, set up SSE
+    if (stream) {
+      // Set headers for SSE
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      
+      // Send thread info
+      res.write(`data: ${JSON.stringify({ type: 'thread', data: thread })}\n\n`);
+      
+      // Process message with streaming
+      try {
+        const onToken = (token) => {
+          res.write(`data: ${JSON.stringify({ type: 'token', data: token })}\n\n`);
+        };
+        
+        const result = await chatService.processMessage(thread.id, userId, message, {
+          folderId,
+          tags,
+          stream: true,
+          onToken
+        });
+        
+        // Send citations
+        res.write(`data: ${JSON.stringify({ type: 'citations', data: result.citations })}\n\n`);
+        
+        // Send completion event
+        res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+        
+        res.end();
+      } catch (error) {
+        // Send error event
+        res.write(`data: ${JSON.stringify({ type: 'error', data: error.message })}\n\n`);
+        res.end();
+      }
+    } else {
+      // Process message without streaming
+      const result = await chatService.processMessage(thread.id, userId, message, {
+        folderId,
+        tags
       });
       
-      return res.status(200).json({
+      res.status(200).json({
         success: true,
         data: {
-          message: assistantMessage,
-          conversation
+          message: result.message,
+          thread,
+          citations: result.citations
         }
       });
     }
-    
-    // Prepare context from relevant chunks
-    const context = relevantChunks.map(chunk => chunk.content).join('\n\n');
-    
-    // Get previous messages for context (limit to last 5 for simplicity)
-    const previousMessages = await chatService.getConversationMessages(conversation.id, 5);
-    
-    // Prepare prompt for OpenAI
-    const prompt = [
-      {
-        role: 'system',
-        content: `You are DocuChat AI, a helpful assistant that answers questions based on the user's documents. 
-        Answer ONLY based on the context provided. If the answer is not in the context, say "I don't have enough information to answer that question."
-        Always cite your sources by referring to the document names and page numbers if available.`
-      },
-      {
-        role: 'system',
-        content: `Context from documents:\n${context}`
-      },
-      ...previousMessages.map(msg => ({
-        role: msg.role,
-        content: msg.content
-      })),
-      {
-        role: 'user',
-        content: message
-      }
-    ];
-    
-    // Call OpenAI API
-    let aiResponse;
-    try {
-      console.log('Calling OpenAI API with prompt:', JSON.stringify(prompt, null, 2));
-      
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: prompt,
-        temperature: 0.3,
-        max_tokens: 1000
-      });
-      
-      aiResponse = completion.choices[0].message.content;
-      console.log('OpenAI API response:', aiResponse);
-    } catch (error) {
-      console.error('Error calling OpenAI API:', error);
-      
-      // Fallback response in case of API error
-      aiResponse = "I'm having trouble processing your request due to an API error. Please try again later.";
-      
-      // If we have relevant chunks, at least provide some basic information
-      if (relevantChunks.length > 0) {
-        aiResponse += "\n\nHowever, I found some potentially relevant information in your documents:\n\n";
-        relevantChunks.forEach((chunk, index) => {
-          aiResponse += `${index + 1}. From "${chunk.documentName}": ${chunk.content.substring(0, 200)}...\n\n`;
-        });
-      }
-    }
-    
-    // Extract citations from the response
-    const citations = extractCitations(aiResponse, relevantChunks);
-    
-    // Save assistant message to history
-    const assistantMessage = await chatService.saveMessage({
-      conversationId: conversation.id,
-      content: aiResponse,
-      role: 'assistant',
-      citations
-    });
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        message: assistantMessage,
-        conversation
-      }
-    });
   } catch (error) {
-    console.error('Error sending query:', error);
+    console.error('Error sending message:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to process query'
+      message: 'Failed to process message'
     });
   }
 };
 
 /**
  * Get chat history
- * @route GET /api/chat/history
+ * @route GET /api/chat/messages
  */
-exports.getChatHistory = async (req, res) => {
+exports.getChatMessages = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { conversationId, limit = 50, offset = 0 } = req.query;
+    const { threadId, limit = 50, offset = 0 } = req.query;
     
-    if (!conversationId) {
+    if (!threadId) {
       return res.status(400).json({
         error: true,
-        message: 'Conversation ID is required'
+        message: 'Thread ID is required'
       });
     }
     
-    // Verify conversation belongs to user
-    const conversation = await chatService.getConversationById(conversationId, userId);
-    if (!conversation) {
+    // Verify thread belongs to user
+    const thread = await chatService.getThreadById(threadId, userId);
+    if (!thread) {
       return res.status(404).json({
         error: true,
-        message: 'Conversation not found'
+        message: 'Thread not found'
       });
     }
     
-    const messages = await chatService.getConversationMessages(
-      conversationId,
+    const messages = await chatService.getThreadMessages(
+      threadId,
+      userId,
       parseInt(limit),
       parseInt(offset)
     );
@@ -190,179 +134,190 @@ exports.getChatHistory = async (req, res) => {
       data: messages
     });
   } catch (error) {
-    console.error('Error getting chat history:', error);
+    console.error('Error getting chat messages:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to get chat history'
+      message: 'Failed to get chat messages'
     });
   }
 };
 
 /**
- * Get all conversations
- * @route GET /api/chat/conversations
+ * Get all threads
+ * @route GET /api/chat/threads
  */
-exports.getAllConversations = async (req, res) => {
+exports.getAllThreads = async (req, res) => {
   try {
     const userId = req.user.id;
     
-    const conversations = await chatService.getAllConversations(userId);
+    const threads = await chatService.getAllThreads(userId);
     
     res.status(200).json({
       success: true,
-      data: conversations
+      data: threads
     });
   } catch (error) {
-    console.error('Error getting conversations:', error);
+    console.error('Error getting threads:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to get conversations'
+      message: 'Failed to get threads'
     });
   }
 };
 
 /**
- * Get conversation by ID
- * @route GET /api/chat/conversations/:id
+ * Get thread by ID
+ * @route GET /api/chat/threads/:id
  */
-exports.getConversationById = async (req, res) => {
+exports.getThreadById = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
     
-    const conversation = await chatService.getConversationById(id, userId);
+    const thread = await chatService.getThreadById(id, userId);
     
-    if (!conversation) {
+    if (!thread) {
       return res.status(404).json({
         error: true,
-        message: 'Conversation not found'
+        message: 'Thread not found'
       });
     }
     
     res.status(200).json({
       success: true,
-      data: conversation
+      data: thread
     });
   } catch (error) {
-    console.error('Error getting conversation:', error);
+    console.error('Error getting thread:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to get conversation'
+      message: 'Failed to get thread'
     });
   }
 };
 
 /**
- * Create a new conversation
- * @route POST /api/chat/conversations
+ * Create a new thread
+ * @route POST /api/chat/threads
  */
-exports.createConversation = async (req, res) => {
+exports.createThread = async (req, res) => {
   try {
     const { title } = req.body;
     const userId = req.user.id;
     
-    const conversation = await chatService.createConversation({
+    const thread = await chatService.createThread({
       userId,
-      title
+      title: title || 'New Chat'
     });
     
     res.status(201).json({
       success: true,
-      data: conversation
+      data: thread
     });
   } catch (error) {
-    console.error('Error creating conversation:', error);
+    console.error('Error creating thread:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to create conversation'
+      message: 'Failed to create thread'
     });
   }
 };
 
 /**
- * Delete a conversation
- * @route DELETE /api/chat/conversations/:id
+ * Delete a thread
+ * @route DELETE /api/chat/threads/:id
  */
-exports.deleteConversation = async (req, res) => {
+exports.deleteThread = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
     
-    const conversation = await chatService.getConversationById(id, userId);
+    const thread = await chatService.getThreadById(id, userId);
     
-    if (!conversation) {
+    if (!thread) {
       return res.status(404).json({
         error: true,
-        message: 'Conversation not found'
+        message: 'Thread not found'
       });
     }
     
-    await chatService.deleteConversation(id, userId);
+    await chatService.deleteThread(id, userId);
     
     res.status(200).json({
       success: true,
-      message: 'Conversation deleted successfully'
+      message: 'Thread deleted successfully'
     });
   } catch (error) {
-    console.error('Error deleting conversation:', error);
+    console.error('Error deleting thread:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to delete conversation'
+      message: 'Failed to delete thread'
     });
   }
 };
 
 /**
- * Update a conversation
- * @route PUT /api/chat/conversations/:id
+ * Update a thread
+ * @route PUT /api/chat/threads/:id
  */
-exports.updateConversation = async (req, res) => {
+exports.updateThread = async (req, res) => {
   try {
     const { id } = req.params;
     const { title } = req.body;
     const userId = req.user.id;
     
-    const conversation = await chatService.getConversationById(id, userId);
+    const thread = await chatService.getThreadById(id, userId);
     
-    if (!conversation) {
+    if (!thread) {
       return res.status(404).json({
         error: true,
-        message: 'Conversation not found'
+        message: 'Thread not found'
       });
     }
     
-    const updatedConversation = await chatService.updateConversation(id, userId, { title });
+    const updatedThread = await chatService.updateThread(id, userId, { title });
     
     res.status(200).json({
       success: true,
-      data: updatedConversation
+      data: updatedThread
     });
   } catch (error) {
-    console.error('Error updating conversation:', error);
+    console.error('Error updating thread:', error);
     res.status(500).json({
       error: true,
-      message: 'Failed to update conversation'
+      message: 'Failed to update thread'
     });
   }
 };
 
-// Helper functions
-
 /**
- * Extract citations from AI response and relevant chunks
- * @param {string} response - AI response
- * @param {Array} chunks - Relevant document chunks
- * @returns {Array} - Extracted citations
+ * Get citation content
+ * @route GET /api/chat/citations/:id
  */
-const extractCitations = (response, chunks) => {
-  // This is a simplified implementation
-  // In a real application, you would use NLP or regex to extract citations
-  
-  // For now, just return the chunks as citations
-  return chunks.map(chunk => ({
-    documentId: chunk.documentId,
-    documentName: chunk.documentName || 'Unknown Document',
-    page: chunk.page,
-    text: chunk.content.substring(0, 100) + '...' // Truncate for brevity
-  }));
+exports.getCitationContent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    
+    // Get the chunk
+    const chunk = await embeddingService.getChunkById(id, userId);
+    
+    if (!chunk) {
+      return res.status(404).json({
+        error: true,
+        message: 'Citation not found'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: chunk
+    });
+  } catch (error) {
+    console.error('Error getting citation content:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to get citation content'
+    });
+  }
 };

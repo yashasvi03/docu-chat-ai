@@ -5,9 +5,10 @@
  * It serves as a central point for accessing all configurations.
  */
 
-const connectDB = require('./database');
+const { sequelize, connectDB } = require('./database');
 const { openai, embeddingConfig, chatConfig } = require('./openai');
 const { s3, bucketName, uploadToS3, deleteFromS3, getFromS3 } = require('./s3');
+const models = require('../models');
 
 // JWT configuration
 const jwtConfig = {
@@ -39,7 +40,9 @@ const googleOAuthConfig = {
 
 // Export all configurations
 module.exports = {
+  sequelize,
   connectDB,
+  models,
   openai,
   embeddingConfig,
   chatConfig,

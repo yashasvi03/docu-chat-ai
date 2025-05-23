@@ -6,57 +6,76 @@ const { body, param, query } = require('express-validator');
 const chatController = require('../controllers/chatController');
 
 // Import middleware
-const auth = require('../middleware/auth');
+const { auth, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 
-// Routes
-// POST /api/chat/query - Send a query to the chat
-router.post('/query', 
-  auth, 
-  body('message').isString().notEmpty(),
-  body('folderId').optional().isString(),
-  body('tags').optional().isArray(),
-  validate,
-  chatController.sendQuery
-);
+// Thread routes
+// GET /api/chat/threads - Get all threads
+router.get('/threads', auth, chatController.getAllThreads);
 
-// GET /api/chat/history - Get chat history
-router.get('/history', auth, chatController.getChatHistory);
-
-// GET /api/chat/conversations - Get all conversations
-router.get('/conversations', auth, chatController.getAllConversations);
-
-// GET /api/chat/conversations/:id - Get a specific conversation
-router.get('/conversations/:id', 
+// GET /api/chat/threads/:id - Get thread by ID
+router.get('/threads/:id', 
   auth, 
   param('id').isString(),
   validate,
-  chatController.getConversationById
+  chatController.getThreadById
 );
 
-// POST /api/chat/conversations - Create a new conversation
-router.post('/conversations', 
+// POST /api/chat/threads - Create a new thread
+router.post('/threads', 
   auth, 
-  body('title').isString(),
-  validate,
-  chatController.createConversation
-);
-
-// DELETE /api/chat/conversations/:id - Delete a conversation
-router.delete('/conversations/:id', 
-  auth, 
-  param('id').isString(),
-  validate,
-  chatController.deleteConversation
-);
-
-// PUT /api/chat/conversations/:id - Update a conversation
-router.put('/conversations/:id', 
-  auth, 
-  param('id').isString(),
   body('title').optional().isString(),
   validate,
-  chatController.updateConversation
+  chatController.createThread
+);
+
+// PUT /api/chat/threads/:id - Update a thread
+router.put('/threads/:id', 
+  auth, 
+  param('id').isString(),
+  body('title').isString(),
+  validate,
+  chatController.updateThread
+);
+
+// DELETE /api/chat/threads/:id - Delete a thread
+router.delete('/threads/:id', 
+  auth, 
+  param('id').isString(),
+  validate,
+  chatController.deleteThread
+);
+
+// Message routes
+// POST /api/chat/message - Send a message
+router.post('/message', 
+  auth, 
+  body('message').isString().notEmpty(),
+  body('threadId').optional().isString(),
+  body('folderId').optional().isString(),
+  body('tags').optional().isArray(),
+  body('stream').optional().isBoolean(),
+  validate,
+  chatController.sendMessage
+);
+
+// GET /api/chat/messages - Get messages for a thread
+router.get('/messages', 
+  auth, 
+  query('threadId').isString(),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('offset').optional().isInt({ min: 0 }),
+  validate,
+  chatController.getChatMessages
+);
+
+// Citation routes
+// GET /api/chat/citations/:id - Get citation content
+router.get('/citations/:id', 
+  auth, 
+  param('id').isString(),
+  validate,
+  chatController.getCitationContent
 );
 
 module.exports = router;

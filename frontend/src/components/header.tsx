@@ -2,24 +2,54 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/contexts/auth-context"
 
 interface NavItem {
   label: string
   href: string
+  requiresAuth?: boolean
 }
-
-const navItems: NavItem[] = [
-  { label: "Home", href: "/" },
-  { label: "Documents", href: "/documents" },
-  { label: "Chat", href: "/chat" }
-]
 
 export function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const { user, isAuthenticated, logout } = useAuth()
+  const router = useRouter()
+
+  // Define navigation items based on authentication status
+  const navItems: NavItem[] = [
+    { label: "Home", href: "/" },
+    { label: "Documents", href: "/documents", requiresAuth: true },
+    { label: "Chat", href: "/chat", requiresAuth: true }
+  ]
+
+  // Filter nav items based on authentication status
+  const filteredNavItems = navItems.filter(item => 
+    !item.requiresAuth || isAuthenticated
+  )
+
+  const handleLogout = async () => {
+    try {
+      await logout()
+      router.push("/")
+      setIsMobileMenuOpen(false)
+    } catch (error) {
+      console.error("Logout failed:", error)
+    }
+  }
+
+  const handleAuthButtonClick = () => {
+    if (isAuthenticated) {
+      handleLogout()
+    } else {
+      router.push("/auth/login")
+      setIsMobileMenuOpen(false)
+    }
+  }
 
   return (
-    <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="fixed top-0 left-0 right-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container flex h-16 items-center justify-between">
         <div className="flex items-center gap-2">
           <Link href="/" className="flex items-center space-x-2">
@@ -29,7 +59,7 @@ export function Header() {
 
         {/* Desktop Navigation */}
         <nav className="hidden md:flex items-center gap-6">
-          {navItems.map((item) => (
+          {filteredNavItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -38,7 +68,23 @@ export function Header() {
               {item.label}
             </Link>
           ))}
-          <Button size="sm">Sign In</Button>
+          
+          {isAuthenticated && (
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-medium">
+                {user?.name}
+              </span>
+              <Button size="sm" variant="outline" onClick={handleLogout}>
+                Sign Out
+              </Button>
+            </div>
+          )}
+          
+          {!isAuthenticated && (
+            <Button size="sm" onClick={() => router.push("/auth/login")}>
+              Sign In
+            </Button>
+          )}
         </nav>
 
         {/* Mobile Menu Button */}
@@ -72,7 +118,7 @@ export function Header() {
       {isMobileMenuOpen && (
         <div className="md:hidden border-t">
           <div className="container py-4 space-y-3">
-            {navItems.map((item) => (
+            {filteredNavItems.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
@@ -82,9 +128,28 @@ export function Header() {
                 {item.label}
               </Link>
             ))}
-            <Button className="w-full" size="sm">
-              Sign In
-            </Button>
+            
+            {isAuthenticated && (
+              <div className="pt-2 border-t">
+                <p className="text-sm font-medium mb-2">{user?.name}</p>
+                <Button className="w-full" size="sm" variant="outline" onClick={handleLogout}>
+                  Sign Out
+                </Button>
+              </div>
+            )}
+            
+            {!isAuthenticated && (
+              <Button 
+                className="w-full" 
+                size="sm"
+                onClick={() => {
+                  router.push("/auth/login")
+                  setIsMobileMenuOpen(false)
+                }}
+              >
+                Sign In
+              </Button>
+            )}
           </div>
         </div>
       )}

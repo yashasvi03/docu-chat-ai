@@ -1,116 +1,202 @@
-// In a real application, this would interact with a database
-// For now, we'll use in-memory storage for demonstration
+/**
+ * Chat Service
+ * 
+ * This service handles chat functionality including thread and message management,
+ * as well as integration with the RAG system for document-based responses.
+ */
 
-// In-memory storage
-const conversations = [];
-const messages = [];
-
-// Auto-increment IDs
-let conversationId = 1;
-let messageId = 1;
+const { openai, chatConfig, ragConfig } = require('../config/openai');
+const { Thread, Message, User, Document } = require('../models');
+const embeddingService = require('./embeddingService');
+const { v4: uuidv4 } = require('uuid');
 
 /**
- * Get all conversations for a user
+ * Get all threads for a user
  * @param {string} userId - User ID
- * @returns {Promise<Array>} - Conversations
+ * @returns {Promise<Array>} - Threads
  */
-exports.getAllConversations = async (userId) => {
-  return conversations.filter(conv => conv.userId === userId);
+exports.getAllThreads = async (userId) => {
+  try {
+    // Get user to find organization ID
+    const user = await User.findByPk(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    // Get threads
+    const threads = await Thread.findAll({
+      where: {
+        userId,
+        orgId: user.orgId
+      },
+      order: [['updatedAt', 'DESC']]
+    });
+    
+    return threads;
+  } catch (error) {
+    console.error('Error getting threads:', error);
+    throw error;
+  }
 };
 
 /**
- * Get conversation by ID
- * @param {string} id - Conversation ID
+ * Get thread by ID
+ * @param {string} id - Thread ID
  * @param {string} userId - User ID
- * @returns {Promise<Object>} - Conversation
+ * @returns {Promise<Object>} - Thread
  */
-exports.getConversationById = async (id, userId) => {
-  return conversations.find(conv => conv.id === id && conv.userId === userId);
+exports.getThreadById = async (id, userId) => {
+  try {
+    // Get user to find organization ID
+    const user = await User.findByPk(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    // Get thread
+    const thread = await Thread.findOne({
+      where: {
+        id,
+        userId,
+        orgId: user.orgId
+      }
+    });
+    
+    return thread;
+  } catch (error) {
+    console.error('Error getting thread:', error);
+    throw error;
+  }
 };
 
 /**
- * Create a conversation
- * @param {Object} conversationData - Conversation data
- * @returns {Promise<Object>} - Created conversation
+ * Create a thread
+ * @param {Object} threadData - Thread data
+ * @returns {Promise<Object>} - Created thread
  */
-exports.createConversation = async (conversationData) => {
-  const conversation = {
-    id: (conversationId++).toString(),
-    ...conversationData,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  
-  conversations.push(conversation);
-  
-  return conversation;
+exports.createThread = async (threadData) => {
+  try {
+    // Get user to find organization ID
+    const user = await User.findByPk(threadData.userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    // Create thread
+    const thread = await Thread.create({
+      id: uuidv4(),
+      title: threadData.title || 'New Chat',
+      userId: threadData.userId,
+      orgId: user.orgId
+    });
+    
+    return thread;
+  } catch (error) {
+    console.error('Error creating thread:', error);
+    throw error;
+  }
 };
 
 /**
- * Update a conversation
- * @param {string} id - Conversation ID
+ * Update a thread
+ * @param {string} id - Thread ID
  * @param {string} userId - User ID
  * @param {Object} updates - Updates to apply
- * @returns {Promise<Object>} - Updated conversation
+ * @returns {Promise<Object>} - Updated thread
  */
-exports.updateConversation = async (id, userId, updates) => {
-  const index = conversations.findIndex(conv => conv.id === id && conv.userId === userId);
-  
-  if (index === -1) {
-    return null;
+exports.updateThread = async (id, userId, updates) => {
+  try {
+    // Get thread
+    const thread = await Thread.findOne({
+      where: {
+        id,
+        userId
+      }
+    });
+    
+    if (!thread) {
+      return null;
+    }
+    
+    // Update thread
+    await thread.update({
+      title: updates.title !== undefined ? updates.title : thread.title
+    });
+    
+    return thread;
+  } catch (error) {
+    console.error('Error updating thread:', error);
+    throw error;
   }
-  
-  const updatedConversation = {
-    ...conversations[index],
-    ...updates,
-    updatedAt: new Date().toISOString()
-  };
-  
-  conversations[index] = updatedConversation;
-  
-  return updatedConversation;
 };
 
 /**
- * Delete a conversation
- * @param {string} id - Conversation ID
+ * Delete a thread
+ * @param {string} id - Thread ID
  * @param {string} userId - User ID
  * @returns {Promise<boolean>} - Success
  */
-exports.deleteConversation = async (id, userId) => {
-  const index = conversations.findIndex(conv => conv.id === id && conv.userId === userId);
-  
-  if (index === -1) {
-    return false;
-  }
-  
-  conversations.splice(index, 1);
-  
-  // Also delete all messages in this conversation
-  const messagesToDelete = messages.filter(msg => msg.conversationId === id);
-  messagesToDelete.forEach(msg => {
-    const msgIndex = messages.findIndex(m => m.id === msg.id);
-    if (msgIndex !== -1) {
-      messages.splice(msgIndex, 1);
+exports.deleteThread = async (id, userId) => {
+  try {
+    // Get thread
+    const thread = await Thread.findOne({
+      where: {
+        id,
+        userId
+      }
+    });
+    
+    if (!thread) {
+      return false;
     }
-  });
-  
-  return true;
+    
+    // Delete thread (this will cascade delete messages)
+    await thread.destroy();
+    
+    return true;
+  } catch (error) {
+    console.error('Error deleting thread:', error);
+    throw error;
+  }
 };
 
 /**
- * Get messages for a conversation
- * @param {string} conversationId - Conversation ID
+ * Get messages for a thread
+ * @param {string} threadId - Thread ID
+ * @param {string} userId - User ID
  * @param {number} limit - Maximum number of messages to return
  * @param {number} offset - Offset for pagination
  * @returns {Promise<Array>} - Messages
  */
-exports.getConversationMessages = async (conversationId, limit = 50, offset = 0) => {
-  const conversationMessages = messages
-    .filter(msg => msg.conversationId === conversationId)
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-  
-  return conversationMessages.slice(offset, offset + limit);
+exports.getThreadMessages = async (threadId, userId, limit = 50, offset = 0) => {
+  try {
+    // Get thread to verify ownership
+    const thread = await Thread.findOne({
+      where: {
+        id: threadId,
+        userId
+      }
+    });
+    
+    if (!thread) {
+      throw new Error('Thread not found or access denied');
+    }
+    
+    // Get messages
+    const messages = await Message.findAll({
+      where: {
+        threadId
+      },
+      order: [['createdAt', 'ASC']],
+      limit,
+      offset
+    });
+    
+    return messages;
+  } catch (error) {
+    console.error('Error getting thread messages:', error);
+    throw error;
+  }
 };
 
 /**
@@ -119,21 +205,27 @@ exports.getConversationMessages = async (conversationId, limit = 50, offset = 0)
  * @returns {Promise<Object>} - Saved message
  */
 exports.saveMessage = async (messageData) => {
-  const message = {
-    id: (messageId++).toString(),
-    ...messageData,
-    createdAt: new Date().toISOString()
-  };
-  
-  messages.push(message);
-  
-  // Update conversation's updatedAt
-  const conversation = conversations.find(conv => conv.id === messageData.conversationId);
-  if (conversation) {
-    conversation.updatedAt = new Date().toISOString();
+  try {
+    // Create message
+    const message = await Message.create({
+      id: uuidv4(),
+      content: messageData.content,
+      role: messageData.role,
+      threadId: messageData.threadId,
+      citations: messageData.citations || null
+    });
+    
+    // Update thread's updatedAt
+    await Thread.update(
+      { updatedAt: new Date() },
+      { where: { id: messageData.threadId } }
+    );
+    
+    return message;
+  } catch (error) {
+    console.error('Error saving message:', error);
+    throw error;
   }
-  
-  return message;
 };
 
 /**
@@ -142,22 +234,236 @@ exports.saveMessage = async (messageData) => {
  * @returns {Promise<Object>} - Message
  */
 exports.getMessageById = async (id) => {
-  return messages.find(msg => msg.id === id);
+  try {
+    return await Message.findByPk(id);
+  } catch (error) {
+    console.error('Error getting message:', error);
+    throw error;
+  }
 };
 
 /**
  * Delete a message
  * @param {string} id - Message ID
+ * @param {string} userId - User ID
  * @returns {Promise<boolean>} - Success
  */
-exports.deleteMessage = async (id) => {
-  const index = messages.findIndex(msg => msg.id === id);
+exports.deleteMessage = async (id, userId) => {
+  try {
+    // Get message
+    const message = await Message.findByPk(id, {
+      include: [
+        {
+          model: Thread,
+          where: { userId }
+        }
+      ]
+    });
+    
+    if (!message) {
+      return false;
+    }
+    
+    // Delete message
+    await message.destroy();
+    
+    return true;
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    throw error;
+  }
+};
+
+/**
+ * Process a user message and generate a response
+ * @param {string} threadId - Thread ID
+ * @param {string} userId - User ID
+ * @param {string} userMessage - User message
+ * @param {Object} options - Options for processing
+ * @returns {Promise<Object>} - Response message
+ */
+exports.processMessage = async (threadId, userId, userMessage, options = {}) => {
+  try {
+    const {
+      folderId = null,
+      tags = [],
+      stream = false,
+      onToken = null
+    } = options;
+    
+    // Get thread to verify ownership
+    const thread = await Thread.findOne({
+      where: {
+        id: threadId,
+        userId
+      }
+    });
+    
+    if (!thread) {
+      throw new Error('Thread not found or access denied');
+    }
+    
+    // Save user message
+    const savedUserMessage = await this.saveMessage({
+      content: userMessage,
+      role: 'user',
+      threadId
+    });
+    
+    // Get thread history (last 10 messages)
+    const history = await Message.findAll({
+      where: {
+        threadId
+      },
+      order: [['createdAt', 'ASC']],
+      limit: 10
+    });
+    
+    // Format history for the LLM
+    const formattedHistory = history.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
+    
+    // Find relevant documents
+    const relevantDocuments = await embeddingService.findRelevantDocuments(userMessage, userId, {
+      folderId,
+      tags,
+      limit: ragConfig.maxChunks,
+      threshold: ragConfig.similarityThreshold
+    });
+    
+    // Generate prompt with retrieved chunks
+    const promptMessages = embeddingService.generatePrompt(userMessage, relevantDocuments);
+    
+    // Combine history with prompt
+    // We take the system message from the prompt and add the history before the user's question
+    const messages = [
+      promptMessages[0], // System message
+      ...formattedHistory.slice(0, -1), // Previous messages (excluding the last user message)
+      promptMessages[1] // User message with context
+    ];
+    
+    // Call OpenAI API
+    let response;
+    let citations = [];
+    
+    if (stream) {
+      // Streaming response
+      response = await streamResponse(messages, onToken);
+    } else {
+      // Non-streaming response
+      response = await openai.chat.completions.create({
+        model: chatConfig.model,
+        messages,
+        temperature: chatConfig.temperature,
+        max_tokens: chatConfig.max_tokens,
+        top_p: chatConfig.top_p,
+        frequency_penalty: chatConfig.frequency_penalty,
+        presence_penalty: chatConfig.presence_penalty,
+        logit_bias: chatConfig.logit_bias
+      });
+    }
+    
+    // Extract citations from response
+    const responseText = stream ? response : response.choices[0].message.content;
+    citations = extractCitations(responseText, relevantDocuments);
+    
+    // Save assistant message
+    const savedAssistantMessage = await this.saveMessage({
+      content: responseText,
+      role: 'assistant',
+      threadId,
+      citations
+    });
+    
+    return {
+      message: savedAssistantMessage,
+      citations
+    };
+  } catch (error) {
+    console.error('Error processing message:', error);
+    
+    // Save error message
+    await this.saveMessage({
+      content: 'I encountered an error while processing your request. Please try again.',
+      role: 'assistant',
+      threadId
+    });
+    
+    throw error;
+  }
+};
+
+/**
+ * Stream response from OpenAI
+ * @param {Array} messages - Messages to send to OpenAI
+ * @param {Function} onToken - Callback for each token
+ * @returns {Promise<string>} - Complete response
+ */
+async function streamResponse(messages, onToken) {
+  try {
+    const stream = await openai.chat.completions.create({
+      model: chatConfig.model,
+      messages,
+      temperature: chatConfig.temperature,
+      max_tokens: chatConfig.max_tokens,
+      top_p: chatConfig.top_p,
+      frequency_penalty: chatConfig.frequency_penalty,
+      presence_penalty: chatConfig.presence_penalty,
+      logit_bias: chatConfig.logit_bias,
+      stream: true
+    });
+    
+    let fullResponse = '';
+    
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        fullResponse += content;
+        if (onToken) {
+          onToken(content);
+        }
+      }
+    }
+    
+    return fullResponse;
+  } catch (error) {
+    console.error('Error streaming response:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extract citations from response
+ * @param {string} response - Response text
+ * @param {Array} relevantDocuments - Relevant documents
+ * @returns {Array} - Citations
+ */
+function extractCitations(response, relevantDocuments) {
+  const citations = [];
+  const citationRegex = /\[Document (\d+):/g;
   
-  if (index === -1) {
-    return false;
+  let match;
+  while ((match = citationRegex.exec(response)) !== null) {
+    const documentIndex = parseInt(match[1]) - 1;
+    if (documentIndex >= 0 && documentIndex < relevantDocuments.length) {
+      const document = relevantDocuments[documentIndex];
+      
+      // Check if this document is already cited
+      const existingCitation = citations.find(c => c.chunkId === document.id);
+      
+      if (!existingCitation) {
+        citations.push({
+          chunkId: document.id,
+          documentId: document.documentId,
+          documentTitle: document.documentTitle || 'Untitled',
+          page: document.page || 1,
+          similarity: document.similarity
+        });
+      }
+    }
   }
   
-  messages.splice(index, 1);
-  
-  return true;
-};
+  return citations;
+}

@@ -31,6 +31,11 @@ yarn-error.log*
 .env.development
 .env.test
 .env.production
+.env.staging
+
+# Environment files with secrets
+.env.*
+!.env.example
 
 # Vercel
 .vercel

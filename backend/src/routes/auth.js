@@ -6,7 +6,7 @@ const { body } = require('express-validator');
 const authController = require('../controllers/authController');
 
 // Import middleware
-const auth = require('../middleware/auth');
+const { auth, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 
 // Routes
@@ -15,6 +15,7 @@ router.post('/register',
   body('email').isEmail(),
   body('password').isLength({ min: 8 }),
   body('name').isString(),
+  body('orgName').isString(),
   validate,
   authController.register
 );
@@ -69,6 +70,39 @@ router.post('/reset-password',
   body('password').isLength({ min: 8 }),
   validate,
   authController.resetPassword
+);
+
+// POST /api/auth/invite - Invite a user to the organization (owner/admin only)
+router.post('/invite',
+  auth,
+  authorize(['owner', 'admin']),
+  body('email').isEmail(),
+  body('role').isIn(['admin', 'editor', 'viewer']),
+  validate,
+  authController.inviteUser
+);
+
+// GET /api/auth/users - Get all users in the organization (owner/admin only)
+router.get('/users',
+  auth,
+  authorize(['owner', 'admin']),
+  authController.getOrganizationUsers
+);
+
+// PUT /api/auth/users/:id/role - Update user role (owner only)
+router.put('/users/:id/role',
+  auth,
+  authorize(['owner']),
+  body('role').isIn(['admin', 'editor', 'viewer']),
+  validate,
+  authController.updateUserRole
+);
+
+// DELETE /api/auth/users/:id - Remove user from organization (owner only)
+router.delete('/users/:id',
+  auth,
+  authorize(['owner']),
+  authController.removeUser
 );
 
 module.exports = router;

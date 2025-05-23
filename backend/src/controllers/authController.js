@@ -1,20 +1,25 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+const { Op } = require('sequelize');
 
-// Import services
-const userService = require('../services/userService');
+// Import configuration
+const { jwtConfig } = require('../config');
+
+// Import models
+const { User, Organisation } = require('../models');
 
 /**
- * Register a new user
+ * Register a new user and organization
  * @route POST /api/auth/register
  */
 exports.register = async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password, name, orgName } = req.body;
     
     // Check if user already exists
-    const existingUser = await userService.getUserByEmail(email);
+    const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       return res.status(400).json({
         error: true,
@@ -26,18 +31,33 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     
+    // Create organization
+    const organisation = await Organisation.create({
+      name: orgName
+    });
+    
     // Create user
-    const user = await userService.createUser({
+    const user = await User.create({
       email,
       password: hashedPassword,
-      name
+      name,
+      role: 'owner',
+      orgId: organisation.id
     });
     
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(user);
     
     // Save refresh token
-    await userService.saveRefreshToken(user.id, refreshToken);
+    await user.update({ refreshToken });
+    
+    // Set HTTP-only cookie with access token
+    res.cookie('access', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    });
     
     res.status(201).json({
       success: true,
@@ -45,9 +65,14 @@ exports.register = async (req, res) => {
         user: {
           id: user.id,
           email: user.email,
-          name: user.name
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId
         },
-        accessToken,
+        organisation: {
+          id: organisation.id,
+          name: organisation.name
+        },
         refreshToken
       }
     });
@@ -69,7 +94,11 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
     
     // Check if user exists
-    const user = await userService.getUserByEmail(email);
+    const user = await User.findOne({ 
+      where: { email },
+      include: [{ model: Organisation }]
+    });
+    
     if (!user) {
       return res.status(401).json({
         error: true,
@@ -90,7 +119,15 @@ exports.login = async (req, res) => {
     const { accessToken, refreshToken } = generateTokens(user);
     
     // Save refresh token
-    await userService.saveRefreshToken(user.id, refreshToken);
+    await user.update({ refreshToken });
+    
+    // Set HTTP-only cookie with access token
+    res.cookie('access', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    });
     
     res.status(200).json({
       success: true,
@@ -98,9 +135,14 @@ exports.login = async (req, res) => {
         user: {
           id: user.id,
           email: user.email,
-          name: user.name
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId
         },
-        accessToken,
+        organisation: user.Organisation ? {
+          id: user.Organisation.id,
+          name: user.Organisation.name
+        } : null,
         refreshToken
       }
     });
@@ -128,7 +170,7 @@ exports.googleLogin = async (req, res) => {
       message: 'Google login not implemented yet',
       data: {
         user: null,
-        accessToken: null,
+        organisation: null,
         refreshToken: null
       }
     });
@@ -149,7 +191,10 @@ exports.getCurrentUser = async (req, res) => {
   try {
     const userId = req.user.id;
     
-    const user = await userService.getUserById(userId);
+    const user = await User.findByPk(userId, {
+      include: [{ model: Organisation }],
+      attributes: { exclude: ['password', 'refreshToken', 'resetToken', 'resetTokenExpiry'] }
+    });
     
     if (!user) {
       return res.status(404).json({
@@ -161,9 +206,19 @@ exports.getCurrentUser = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        id: user.id,
-        email: user.email,
-        name: user.name
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        },
+        organisation: user.Organisation ? {
+          id: user.Organisation.id,
+          name: user.Organisation.name
+        } : null
       }
     });
   } catch (error) {
@@ -184,7 +239,13 @@ exports.logout = async (req, res) => {
     const userId = req.user.id;
     
     // Clear refresh token
-    await userService.clearRefreshToken(userId);
+    await User.update(
+      { refreshToken: null },
+      { where: { id: userId } }
+    );
+    
+    // Clear access token cookie
+    res.clearCookie('access');
     
     res.status(200).json({
       success: true,
@@ -210,7 +271,7 @@ exports.refreshToken = async (req, res) => {
     // Verify refresh token
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+      decoded = jwt.verify(refreshToken, jwtConfig.refreshSecret);
     } catch (error) {
       return res.status(401).json({
         error: true,
@@ -219,7 +280,12 @@ exports.refreshToken = async (req, res) => {
     }
     
     // Check if refresh token exists in database
-    const user = await userService.getUserByRefreshToken(refreshToken);
+    const user = await User.findOne({
+      where: {
+        id: decoded.id,
+        refreshToken
+      }
+    });
     
     if (!user) {
       return res.status(401).json({
@@ -232,12 +298,19 @@ exports.refreshToken = async (req, res) => {
     const tokens = generateTokens(user);
     
     // Save new refresh token
-    await userService.saveRefreshToken(user.id, tokens.refreshToken);
+    await user.update({ refreshToken: tokens.refreshToken });
+    
+    // Set HTTP-only cookie with access token
+    res.cookie('access', tokens.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    });
     
     res.status(200).json({
       success: true,
       data: {
-        accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken
       }
     });
@@ -259,7 +332,7 @@ exports.changePassword = async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const userId = req.user.id;
     
-    const user = await userService.getUserById(userId);
+    const user = await User.findByPk(userId);
     
     if (!user) {
       return res.status(404).json({
@@ -282,7 +355,7 @@ exports.changePassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, salt);
     
     // Update password
-    await userService.updateUser(userId, { password: hashedPassword });
+    await user.update({ password: hashedPassword });
     
     res.status(200).json({
       success: true,
@@ -305,7 +378,7 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
     
-    const user = await userService.getUserByEmail(email);
+    const user = await User.findOne({ where: { email } });
     
     if (!user) {
       // Don't reveal that the user doesn't exist
@@ -317,10 +390,13 @@ exports.forgotPassword = async (req, res) => {
     
     // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetTokenExpiry = Date.now() + 3600000; // 1 hour
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
     
     // Save reset token
-    await userService.saveResetToken(user.id, resetToken, resetTokenExpiry);
+    await user.update({
+      resetToken,
+      resetTokenExpiry
+    });
     
     // In a real application, send an email with the reset link
     // For now, just return the token in the response
@@ -352,9 +428,16 @@ exports.resetPassword = async (req, res) => {
     const { token, password } = req.body;
     
     // Find user with valid reset token
-    const user = await userService.getUserByResetToken(token);
+    const user = await User.findOne({
+      where: {
+        resetToken: token,
+        resetTokenExpiry: {
+          [Op.gt]: new Date()
+        }
+      }
+    });
     
-    if (!user || user.resetTokenExpiry < Date.now()) {
+    if (!user) {
       return res.status(400).json({
         error: true,
         message: 'Invalid or expired reset token'
@@ -366,7 +449,7 @@ exports.resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
     
     // Update password and clear reset token
-    await userService.updateUser(user.id, {
+    await user.update({
       password: hashedPassword,
       resetToken: null,
       resetTokenExpiry: null
@@ -385,6 +468,181 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
+/**
+ * Invite a user to the organization
+ * @route POST /api/auth/invite
+ */
+exports.inviteUser = async (req, res) => {
+  try {
+    const { email, role } = req.body;
+    const orgId = req.user.orgId;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ where: { email } });
+    
+    if (existingUser && existingUser.orgId === orgId) {
+      return res.status(400).json({
+        error: true,
+        message: 'User is already a member of this organization'
+      });
+    }
+    
+    // Generate invite token
+    const inviteToken = crypto.randomBytes(32).toString('hex');
+    
+    // In a real application, send an email with the invite link
+    // For now, just return the token in the response
+    
+    res.status(200).json({
+      success: true,
+      message: 'Invitation sent successfully',
+      // In a real app, don't include this in the response
+      // This is just for demonstration
+      data: {
+        inviteToken,
+        email,
+        role,
+        orgId
+      }
+    });
+  } catch (error) {
+    console.error('Error inviting user:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to invite user'
+    });
+  }
+};
+
+/**
+ * Get all users in the organization
+ * @route GET /api/auth/users
+ */
+exports.getOrganizationUsers = async (req, res) => {
+  try {
+    const orgId = req.user.orgId;
+    
+    const users = await User.findAll({
+      where: { orgId },
+      attributes: ['id', 'email', 'name', 'role', 'createdAt', 'updatedAt']
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: users
+    });
+  } catch (error) {
+    console.error('Error getting organization users:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to get organization users'
+    });
+  }
+};
+
+/**
+ * Update user role
+ * @route PUT /api/auth/users/:id/role
+ */
+exports.updateUserRole = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    const orgId = req.user.orgId;
+    
+    // Check if user exists and belongs to the organization
+    const user = await User.findOne({
+      where: {
+        id,
+        orgId
+      }
+    });
+    
+    if (!user) {
+      return res.status(404).json({
+        error: true,
+        message: 'User not found'
+      });
+    }
+    
+    // Prevent changing the role of the owner
+    if (user.role === 'owner') {
+      return res.status(403).json({
+        error: true,
+        message: 'Cannot change the role of the organization owner'
+      });
+    }
+    
+    // Update role
+    await user.update({ role });
+    
+    res.status(200).json({
+      success: true,
+      message: 'User role updated successfully',
+      data: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to update user role'
+    });
+  }
+};
+
+/**
+ * Remove user from organization
+ * @route DELETE /api/auth/users/:id
+ */
+exports.removeUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orgId = req.user.orgId;
+    
+    // Check if user exists and belongs to the organization
+    const user = await User.findOne({
+      where: {
+        id,
+        orgId
+      }
+    });
+    
+    if (!user) {
+      return res.status(404).json({
+        error: true,
+        message: 'User not found'
+      });
+    }
+    
+    // Prevent removing the owner
+    if (user.role === 'owner') {
+      return res.status(403).json({
+        error: true,
+        message: 'Cannot remove the organization owner'
+      });
+    }
+    
+    // Delete user
+    await user.destroy();
+    
+    res.status(200).json({
+      success: true,
+      message: 'User removed successfully'
+    });
+  } catch (error) {
+    console.error('Error removing user:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to remove user'
+    });
+  }
+};
+
 // Helper functions
 
 /**
@@ -398,10 +656,12 @@ const generateTokens = (user) => {
     {
       id: user.id,
       email: user.email,
-      name: user.name
+      name: user.name,
+      role: user.role,
+      orgId: user.orgId
     },
-    process.env.JWT_SECRET,
-    { expiresIn: '15m' }
+    jwtConfig.secret,
+    { expiresIn: jwtConfig.accessTokenExpiry }
   );
   
   // Generate refresh token
@@ -409,8 +669,8 @@ const generateTokens = (user) => {
     {
       id: user.id
     },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: '7d' }
+    jwtConfig.refreshSecret,
+    { expiresIn: jwtConfig.refreshTokenExpiry }
   );
   
   return { accessToken, refreshToken };
