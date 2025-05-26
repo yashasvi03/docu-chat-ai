@@ -166,7 +166,7 @@ const Chunk = sequelize.define('Chunk', {
     allowNull: true
   },
   embedding: {
-    type: Vector(1536),
+    type: DataTypes.STRING,
     allowNull: false
   },
   metadata: {

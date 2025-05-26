@@ -5,8 +5,12 @@
  * It initializes Sequelize with the database credentials from environment variables.
  */
 
-const { Sequelize } = require('sequelize');
-const { Vector } = require('pgvector');
+const { Sequelize, DataTypes } = require('sequelize');
+
+// Define Vector type for pgvector
+const Vector = (dimensions) => {
+  return `vector(${dimensions})`;
+};
 
 // Initialize Sequelize with PostgreSQL
 const sequelize = new Sequelize(
